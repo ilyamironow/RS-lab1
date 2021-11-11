@@ -6,95 +6,180 @@
 #include "ipc.h"
 #include "common.h"
 #include "pa1.h"
+#include <time.h>
 
-struct {
+struct self_structure_type {
     int i; // current process's number
-    int N; // number of child processes
-} self_structure;
+    int N; // number of processes
+    int ****fd;
+};
 
-int send_multicast(void * self, const Message * msg) {
+int send_multicast(void *self, const Message *msg) {
     // self should be the data structure that has current i and N
     // void * to data structure
-        write(fd1[1], &state_message2, sizeof(MessageType));
+    for (int i = 0; i < (*(struct self_structure_type *) self).N; i++) {
+        if ((*(struct self_structure_type *) self).i == i)
+            continue;
+        write((*((*(struct self_structure_type *) self).fd))[(*(struct self_structure_type *) self).i][i][1], msg,
+              sizeof(Message));
+    }
+    return 0;
+}
+
+int receive_any(void *self, Message *msg) {
+    for (int i = 1; i < (*(struct self_structure_type *) self).N; i++) {
+        if ((*(struct self_structure_type *) self).i == i)
+            continue;
+        Message *process_msg;
+        read((*((*(struct self_structure_type *) self).fd))[(*(struct self_structure_type *) self).i][i][0],
+             process_msg,
+             sizeof(Message));
+        //if (process_msg->s_header.s_type != msg->s_header.s_type)
+        //   printf("%d process didn't send enum №%d to %d process\n", i, msg->s_header.s_type, (*(struct self_structure_type *) self).i);
+    }
+    return 0;
 }
 
 int main() {
     FILE *f;
-    f = fopen("x.log", "a+"); // a+ (create + append) option will allow appending which is useful in a log file
+    f = fopen(events_log, "a+"); // a+ (create + append) option will allow appending which is useful in a log file
     int N;
     printf("Input N from 1 to 10: ");
     scanf("%d", &N);
-    self_structure.N = N;
-    int *fd1[N], *fd2[N];
-    pid_t *p[N];
+    N++;
 
-    /*
-    should be fd['from']['to'][0/1] !!!
-
-    */
+    // fd['from']['to'][0/1]
+    int ***fd = (int ***) malloc(N * sizeof(int **));
     for (int i = 0; i < N; i++) {
-        fd1[i] = (int *) malloc(2 * sizeof(int));
-        fd2[i] = (int *) malloc(2 * sizeof(int));
-        pipe(fd1[i]);
-        pipe(fd2[i]);
-        close(fd1[i][1]); // fd[0] - read - fd1
-        close(fd2[i][0]); // fd[1] - write - fd2
+        fd[i] = (int **) malloc(N * sizeof(int *));
+
+        for (int j = 0; j < N; j++)
+            fd[i][j] = (int *) malloc(2 * sizeof(int));
     }
+
+    for (int i = 1; i < N; i++)
+        for (int j = 0; j < i; j++)
+            pipe(fd[i][j]);
+    for (int j = 1; j < N; j++)
+        for (int i = 0; i < j; i++)
+            pipe(fd[i][j]);
+
+   /* for (int j = 0; j < N; j++)
+        for (int i = 0; i < N; i++) {
+            fstat(fd[i][j][0]);
+        }*/
+// логи открытых изначально дескрипторах в терминал и в файл логов -- доделать
+
+
     /*
      * We create the pipe before forking the processes, so they share the pipe fds.
      * If we swap these two lines, both processes create their own pipe,
      * and they have different values, thus they can't communicate using fd!
      */
-    for (int i = 0; i < N; i++)
+    int p[N]; //because p[0] is a parent
+    for (int i = 1; i < N; i++) {
         p[i] = fork();
-
-    for (int i = 0; i <= N; i++)
-        if (p[i] == 0) {
-        //in child process p
-        //getppid() - returns pid of the parent of child
-        self_structure.i = i;
-
-        send_multicast
-
-        MessageType state_message1;
-        MessageType state_message2 = STARTED;
-        close(fd1[0]);
-        close(fd2[1]);
-
-        fprintf(f, "child's state = STARTED\n");
-        write(fd1[1], &state_message2, sizeof(MessageType));
-
-        read(fd2[0], &state_message1, sizeof(MessageType));
-        if (state_message1 == 0)
-            fprintf(f, "child got parent's state = STARTED\n");
-
-        close(fd1[1]);
-        close(fd2[0]);
+        if (p[i] == 0)
             break;
-    } else if (i == N) {
-        //in parent process
-        MessageType state_message2;
-        MessageType state_message1 = STARTED;
-        close(fd1[1]);
-        close(fd2[0]);
-
-        fprintf(f, "parent's state = STARTED\n");
-        write(fd2[1], &state_message1, sizeof(MessageType));
-
-        read(fd1[0], &state_message2, sizeof(MessageType));
-        if (state_message2 == 0)
-            fprintf(f, "parent got child's state = STARTED\n");
-
-        close(fd1[0]);
-        close(fd2[1]);
-        wait(NULL);
-        /*
-         * wait for state changes in a child of the calling process
-         * state change is considered to be: the child terminated; the child was stopped by a signal;
-         * or the child was resumed by a signal.S
-         * if a wait is not performed, then the terminated child remains in a "zombie" state
-         */
     }
+
+    /* mail cycle */
+    for (int i = N - 1; i >= 0; i--)
+        if (p[i] == 0 && i != 0) {
+            //in child process p[i]
+
+            fprintf(f, log_started_fmt, i, getpid(), getppid()); //* пишет в лог started
+
+            char buffer[50];
+            int len;
+            len = sprintf(buffer, log_started_fmt, i, getpid(), getppid());
+
+            struct self_structure_type self_structure = {.i = i, .N = N, .fd = &fd};
+
+            for (int j = 0; j < N; j++) {
+                if (j == i)
+                    continue;
+                close(fd[i][j][0]); // close read end for pipe direction from current process
+                close(fd[j][i][1]); // close write end for pipe direction to current process
+            }
+            // отправляет started всем процессам
+            MessageHeader s_header = {.s_magic = MESSAGE_MAGIC, .s_payload_len = len, .s_type = STARTED, .s_local_time = (int16_t) time(
+                    NULL)};
+            Message msg = {.s_header = s_header, .s_payload = buffer};
+            send_multicast(&self_structure, &msg);
+
+            // дождаться от других дочерних сообщения STARTED
+            receive_any(&self_structure, &msg);
+            fprintf(f, log_received_all_started_fmt, i); //* пишет в лог received all started
+
+            fprintf(f, log_done_fmt, i); //* пишет в лог done
+            // отправляет DONE всем
+            s_header.s_type = DONE;
+            len = sprintf(buffer, log_done_fmt, i, getpid(), getppid());
+            s_header.s_payload_len = len;
+            s_header.s_local_time = (int16_t) time(NULL);
+            msg = (Message){.s_header = s_header, .s_payload = buffer};
+            send_multicast(&self_structure, &msg);
+
+            // дождаться от других дочерних сообщения done
+            receive_any(&self_structure, &msg);
+            fprintf(f, log_received_all_done_fmt, i); //* пишет в лог received all started
+            //тут и выше пишет received даже если не received
+
+            for (int j = 0; j < N; j++) {
+                if (j == i)
+                    continue;
+                close(fd[i][j][1]); // close read end for pipe direction from current process
+                close(fd[j][i][0]); // close write end for pipe direction to current process
+            }
+            break;
+        } else if (i == 0) {
+            //in parent process
+
+            /* родительский
+             * дождаться от других дочерних сообщения DONE - read
+             * wait пока все завершатся и конец
+             */
+            struct self_structure_type self_structure = {.i = i, .N = N, .fd = &fd};
+
+            for (int j = 1; j < N; j++) {
+                close(fd[i][j][0]); // close read end for pipe direction from current process
+                close(fd[j][i][1]); // close write end for pipe direction to current process
+            }
+            MessageHeader s_header = {.s_type = STARTED};
+            Message msg = {.s_header = s_header};
+
+            receive_any(&self_structure, &msg);
+            fprintf(f, log_received_all_started_fmt, i); //* пишет в лог received all started
+
+            s_header.s_type = DONE;
+            msg.s_header = s_header;
+            receive_any(&self_structure, &msg);
+            fprintf(f, log_received_all_done_fmt, i); //* пишет в лог received all done
+
+            for (int j = 1; j < N; j++) {
+                close(fd[i][j][1]); // close read end for pipe direction from current process
+                close(fd[j][i][0]); // close write end for pipe direction to current process
+            }
+            wait(NULL);
+            break;
+            /*
+             * wait for state changes in a child of the calling process
+             * state change is considered to be: the child terminated; the child was stopped by a signal;
+             * or the child was resumed by a signal.S
+             * if a wait is not performed, then the terminated child remains in a "zombie" state
+             */
+        }
+
+    // deallocate memory
+//free верно
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            free(fd[i][j]);
+        }
+        free(fd[i]);
+    }
+    free(fd);
 
     fclose(f);
     return 0;
