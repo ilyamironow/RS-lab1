@@ -12,6 +12,7 @@ struct self_structure_type {
     int i; // current process's number
     int N; // number of processes
     int ****fd;
+    int *p;
 };
 
 int send_multicast(void *self, const Message *msg) {
@@ -20,8 +21,8 @@ int send_multicast(void *self, const Message *msg) {
     for (int i = 0; i < (*(struct self_structure_type *) self).N; i++) {
         if ((*(struct self_structure_type *) self).i == i)
             continue;
-        write((*((*(struct self_structure_type *) self).fd))[(*(struct self_structure_type *) self).i][i][1], msg,
-              sizeof(Message));
+        printf("%d from %d to %d\n", write((*((*(struct self_structure_type *) self).fd))[(*(struct self_structure_type *) self).i][i][1], msg,
+              sizeof(Message)), (*(struct self_structure_type *) self).i, i);
     }
     return 0;
 }
@@ -30,12 +31,19 @@ int receive_any(void *self, Message *msg) {
     for (int i = 1; i < (*(struct self_structure_type *) self).N; i++) {
         if ((*(struct self_structure_type *) self).i == i)
             continue;
-        Message *process_msg;
-        read((*((*(struct self_structure_type *) self).fd))[(*(struct self_structure_type *) self).i][i][0],
-             process_msg,
-             sizeof(Message));
-        //if (process_msg->s_header.s_type != msg->s_header.s_type)
-        //   printf("%d process didn't send enum №%d to %d process\n", i, msg->s_header.s_type, (*(struct self_structure_type *) self).i);
+        waitpid(((*(struct self_structure_type *) self).p)[i], NULL, NULL);
+        Message process_msg;
+
+        if (read((*((*(struct self_structure_type *) self).fd))[i][(*(struct self_structure_type *) self).i][0],
+                 &process_msg, sizeof(Message)) == -1)
+            printf("%d process didn't send enum №%d to %d process\n", i, msg->s_header.s_type, (*(struct self_structure_type *) self).i);
+        else
+            printf("good\n");
+        //if (process_msg->s_header.s_type == msg->s_header.s_type)
+            //printf("%d process send enum №%d to %d process\n", i, msg->s_header.s_type, (*(struct self_structure_type *) self).i);
+
+            //только для родительского
+            //два раза enum 0
     }
     return 0;
 }
@@ -94,7 +102,7 @@ int main() {
             int len;
             len = sprintf(buffer, log_started_fmt, i, getpid(), getppid());
 
-            struct self_structure_type self_structure = {.i = i, .N = N, .fd = &fd};
+            struct self_structure_type self_structure = {.i = i, .N = N, .fd = &fd, .p = &p};
 
             for (int j = 0; j < N; j++) {
                 if (j == i)
@@ -135,12 +143,11 @@ int main() {
             break;
         } else if (i == 0) {
             //in parent process
-
             /* родительский
              * дождаться от других дочерних сообщения DONE - read
              * wait пока все завершатся и конец
              */
-            struct self_structure_type self_structure = {.i = i, .N = N, .fd = &fd};
+            struct self_structure_type self_structure = {.i = i, .N = N, .fd = &fd, .p = &p};
 
             for (int j = 1; j < N; j++) {
                 close(fd[i][j][0]); // close read end for pipe direction from current process
@@ -148,7 +155,6 @@ int main() {
             }
             MessageHeader s_header = {.s_type = STARTED};
             Message msg = {.s_header = s_header};
-
             receive_any(&self_structure, &msg);
             fprintf(f, log_received_all_started_fmt, i); //* пишет в лог received all started
 
