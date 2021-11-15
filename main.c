@@ -7,22 +7,20 @@
 #include "common.h"
 #include "pa1.h"
 #include <time.h>
+#include <string.h>
 
 struct self_structure_type {
     int i; // current process's number
     int N; // number of processes
     int ****fd;
-    int *p;
 };
 
 int send_multicast(void *self, const Message *msg) {
-    // self should be the data structure that has current i and N
-    // void * to data structure
     for (int i = 0; i < (*(struct self_structure_type *) self).N; i++) {
         if ((*(struct self_structure_type *) self).i == i)
             continue;
-        printf("%d from %d to %d\n", write((*((*(struct self_structure_type *) self).fd))[(*(struct self_structure_type *) self).i][i][1], msg,
-              sizeof(Message)), (*(struct self_structure_type *) self).i, i);
+        write((*((*(struct self_structure_type *) self).fd))[(*(struct self_structure_type *) self).i][i][1], msg,
+              sizeof(Message));
     }
     return 0;
 }
@@ -31,29 +29,19 @@ int receive_any(void *self, Message *msg) {
     for (int i = 1; i < (*(struct self_structure_type *) self).N; i++) {
         if ((*(struct self_structure_type *) self).i == i)
             continue;
-        waitpid(((*(struct self_structure_type *) self).p)[i], NULL, NULL);
+
         Message process_msg;
-
-        if (read((*((*(struct self_structure_type *) self).fd))[i][(*(struct self_structure_type *) self).i][0],
-                 &process_msg, sizeof(Message)) == -1)
-            printf("%d process didn't send enum №%d to %d process\n", i, msg->s_header.s_type, (*(struct self_structure_type *) self).i);
-        else
-            printf("good\n");
-        //if (process_msg->s_header.s_type == msg->s_header.s_type)
-            //printf("%d process send enum №%d to %d process\n", i, msg->s_header.s_type, (*(struct self_structure_type *) self).i);
-
-            //только для родительского
-            //два раза enum 0
+        read((*((*(struct self_structure_type *) self).fd))[i][(*(struct self_structure_type *) self).i][0],
+             &process_msg, sizeof(Message));
     }
     return 0;
 }
 
-int main() {
-    FILE *f;
+int main(__attribute__((unused)) int argc, char **argv) {
+    FILE *f, *f1;
     f = fopen(events_log, "a+"); // a+ (create + append) option will allow appending which is useful in a log file
-    int N;
-    printf("Input N from 1 to 10: ");
-    scanf("%d", &N);
+    f1 = fopen(pipes_log, "a+");
+    int N = (int) (*argv[2] - '0');
     N++;
 
     // fd['from']['to'][0/1]
@@ -66,25 +54,28 @@ int main() {
     }
 
     for (int i = 1; i < N; i++)
-        for (int j = 0; j < i; j++)
+        for (int j = 0; j < i; j++) {
             pipe(fd[i][j]);
+            printf("fd[%d][%d][0] fd[%d][%d][1]\n", i, j, i, j);
+            fprintf(f1, "fd[%d][%d][0] fd[%d][%d][1]\n", i, j, i, j);
+        }
+
     for (int j = 1; j < N; j++)
-        for (int i = 0; i < j; i++)
+        for (int i = 0; i < j; i++) {
             pipe(fd[i][j]);
-
-   /* for (int j = 0; j < N; j++)
-        for (int i = 0; i < N; i++) {
-            fstat(fd[i][j][0]);
-        }*/
-// логи открытых изначально дескрипторах в терминал и в файл логов -- доделать
-
-
+            printf("fd[%d][%d][0] fd[%d][%d][1]\n", i, j, i, j);
+            fprintf(f1, "fd[%d][%d][0] fd[%d][%d][1]\n", i, j, i, j);
+        }
+    fclose(f1);
     /*
      * We create the pipe before forking the processes, so they share the pipe fds.
      * If we swap these two lines, both processes create their own pipe,
      * and they have different values, thus they can't communicate using fd!
      */
-    int p[N]; //because p[0] is a parent
+    int p[N];
+    p[0] = -1;
+    //starts from 1 for less confusion because 0 is a parent
+    // p[0] = -1 is for the main cycle
     for (int i = 1; i < N; i++) {
         p[i] = fork();
         if (p[i] == 0)
@@ -93,16 +84,15 @@ int main() {
 
     /* mail cycle */
     for (int i = N - 1; i >= 0; i--)
-        if (p[i] == 0 && i != 0) {
+        if (p[i] == 0) {
             //in child process p[i]
-
             fprintf(f, log_started_fmt, i, getpid(), getppid()); //* пишет в лог started
 
             char buffer[50];
             int len;
             len = sprintf(buffer, log_started_fmt, i, getpid(), getppid());
 
-            struct self_structure_type self_structure = {.i = i, .N = N, .fd = &fd, .p = &p};
+            struct self_structure_type self_structure = {.i = i, .N = N, .fd = &fd};
 
             for (int j = 0; j < N; j++) {
                 if (j == i)
@@ -123,10 +113,10 @@ int main() {
             fprintf(f, log_done_fmt, i); //* пишет в лог done
             // отправляет DONE всем
             s_header.s_type = DONE;
-            len = sprintf(buffer, log_done_fmt, i, getpid(), getppid());
+            len = sprintf(buffer, log_done_fmt, i);
             s_header.s_payload_len = len;
             s_header.s_local_time = (int16_t) time(NULL);
-            msg = (Message){.s_header = s_header, .s_payload = buffer};
+            msg = (Message) {.s_header = s_header, .s_payload = buffer};
             send_multicast(&self_structure, &msg);
 
             // дождаться от других дочерних сообщения done
@@ -143,11 +133,7 @@ int main() {
             break;
         } else if (i == 0) {
             //in parent process
-            /* родительский
-             * дождаться от других дочерних сообщения DONE - read
-             * wait пока все завершатся и конец
-             */
-            struct self_structure_type self_structure = {.i = i, .N = N, .fd = &fd, .p = &p};
+            struct self_structure_type self_structure = {.i = i, .N = N, .fd = &fd};
 
             for (int j = 1; j < N; j++) {
                 close(fd[i][j][0]); // close read end for pipe direction from current process
@@ -167,7 +153,9 @@ int main() {
                 close(fd[i][j][1]); // close read end for pipe direction from current process
                 close(fd[j][i][0]); // close write end for pipe direction to current process
             }
-            wait(NULL);
+
+            while (wait(NULL) > 0);
+
             break;
             /*
              * wait for state changes in a child of the calling process
@@ -178,7 +166,6 @@ int main() {
         }
 
     // deallocate memory
-//free верно
     for (int i = 0; i < N; i++) {
         for (int j = 0; j < N; j++) {
             free(fd[i][j]);
