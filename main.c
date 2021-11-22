@@ -119,7 +119,7 @@ int main(int argc, char **argv) {
     int N = 0;
     for (int i = 0; i < argc; i++)
         if (!strcmp(argv[i], "-p")) {
-            N = strtol(argv[i + 1], &argv[i + 1], 0);
+            N = (int) strtol(argv[i + 1], &argv[i + 1], 0);
             N++;
             break;
         }
